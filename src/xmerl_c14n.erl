@@ -88,10 +88,11 @@ clean_sort_attrs(Attrs) ->
 %% @doc Returns the list of namespace prefixes "needed" by an element in canonical form
 %% @private
 -spec needed_ns(Elem :: #xmlElement{}, InclNs :: [string()]) -> [string()].
-needed_ns(#xmlElement{nsinfo = NsInfo, attributes = Attrs}, InclNs) ->
+needed_ns(#xmlElement{nsinfo = NsInfo, attributes = Attrs, namespace = Nsp}, InclNs) ->
+    InScopeInclNs = [Prefix || {Prefix, _Uri} <- Nsp#xmlNamespace.nodes, lists:member(Prefix, InclNs)],
     NeededNs1 = case NsInfo of
-        {Nas, _} -> [Nas];
-        _ -> []
+        {Nas, _} -> lists:usort([Nas | InScopeInclNs]);
+        _ -> InScopeInclNs
     end,
     % show through namespaces that apply at the bottom level? this part of the spec is retarded
     %KidElems = [K || K <- Kids, element(1, K) =:= xmlElement],
@@ -308,11 +309,17 @@ needed_ns_test() ->
 
     E4 = esaml_util:build_nsinfo(Ns, #xmlElement{name = 'Blah'}),
     [] = needed_ns(E4, []),
-    [] = needed_ns(E4, ["foo"]),
+    ["foo"] = needed_ns(E4, ["foo"]),
 
     {E5, []} = xmerl_scan:string("<foo:a xmlns:foo=\"urn:foo:\" xmlns:bar=\"urn:bar:\"><foo:b bar:nothing=\"something\">foo</foo:b></foo:a>", [{namespace_conformant, true}]),
     ["foo"] = needed_ns(E5, []),
     ["bar", "foo"] = needed_ns(E5, ["bar"]).
+
+c14n_inherited_inclusive_ns_test() ->
+    {Doc, _} = xmerl_scan:string("<samlp:Response xmlns:samlp=\"urn:oasis:names:tc:SAML:2.0:protocol\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"><saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"_a1\"><saml:AttributeValue xsi:type=\"xsd:string\">user@example.com</saml:AttributeValue></saml:Assertion></samlp:Response>", [{namespace_conformant, true}]),
+    [Assertion] = xmerl_xpath:string("/samlp:Response/saml:Assertion", Doc, [{namespace, [{"samlp", 'urn:oasis:names:tc:SAML:2.0:protocol'}, {"saml", 'urn:oasis:names:tc:SAML:2.0:assertion'}]}]),
+    "<saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"_a1\"><saml:AttributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"xsd:string\">user@example.com</saml:AttributeValue></saml:Assertion>" = c14n(Assertion, false, []),
+    "<saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" ID=\"_a1\"><saml:AttributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"xsd:string\">user@example.com</saml:AttributeValue></saml:Assertion>" = c14n(Assertion, false, ["xsd"]).
 
 xml_safe_string_test() ->
     "foo" = xml_safe_string('foo'),
