@@ -146,7 +146,7 @@ xml_safe_string(Term, Quotes) ->
 %%      for a given XML "thing" (element/attribute/whatever)
 %% @private
 -type xml_thing() :: #xmlDocument{} | #xmlElement{} | #xmlAttribute{} | #xmlPI{} | #xmlText{} | #xmlComment{}.
--spec c14n(XmlThing :: xml_thing(), KnownNs :: [{string(), string()}], ActiveNS :: [string()], Comments :: boolean(), InclNs :: [string()], Acc :: [string() | number()]) -> [string() | number()].
+-spec c14n(XmlThing :: xml_thing(), KnownNs :: [{string(), string()}], ActiveNS :: [{string(), string()} | {default, atom()}], Comments :: boolean(), InclNs :: [string()], Acc :: [string() | number()]) -> [string() | number()].
 
 c14n(#xmlText{value = Text}, _KnownNS, _ActiveNS, _Comments, _InclNs, Acc) ->
     [xml_safe_string(Text) | Acc];
@@ -175,7 +175,7 @@ c14n(#xmlDocument{content = Kids}, KnownNS, ActiveNS, Comments, InclNs, Acc) ->
 c14n(#xmlAttribute{nsinfo = NsInfo, name = Name, value = Value}, _KnownNs, ActiveNS, _Comments, _InclNs, Acc) ->
     case NsInfo of
         {Ns, NName} ->
-            case lists:member(Ns, ActiveNS) of
+            case lists:keymember(Ns, 1, ActiveNS) of
                 true -> ["\"",xml_safe_string(Value, true),"=\"",NName,":",Ns," " | Acc];
                 _ -> error("attribute namespace is not active")
             end;
@@ -193,13 +193,7 @@ c14n(Elem = #xmlElement{}, KnownNSIn, ActiveNSIn, Comments, InclNs, Acc) ->
         [{default, P} | Rest] -> {Rest, P};
         Other -> {Other, ''}
     end,
-    % add any new namespaces this element has that we haven't seen before
-    KnownNS = lists:foldl(fun({Ns, Uri}, Nss) ->
-        case proplists:is_defined(Ns, Nss) of
-            true -> Nss;
-            _ -> [{Ns, atom_to_list(Uri)} | Nss]
-        end
-    end, KnownNSIn, Namespace#xmlNamespace.nodes),
+    KnownNS = [{Ns, atom_to_list(Uri)} || {Ns, Uri} <- Namespace#xmlNamespace.nodes] ++ KnownNSIn,
 
     % now figure out the minimum set of namespaces we need at this level
     NeededNs = needed_ns(Elem, InclNs),
@@ -208,8 +202,8 @@ c14n(Elem = #xmlElement{}, KnownNSIn, ActiveNSIn, Comments, InclNs, Acc) ->
 
     % we need to append any xmlns: that our parent didn't have (ie, aren't in ActiveNS) but
     % that we need
-    NewNS = NeededNs -- ActiveNS,
-    NewActiveNS = ActiveNS ++ NewNS,
+    NewNS = [{Ns, proplists:get_value(Ns, KnownNS, "")} || Ns <- NeededNs] -- ActiveNS,
+    NewActiveNS = [Active || Active = {Ns, _} <- ActiveNS, not lists:keymember(Ns, 1, NewNS)] ++ NewNS,
 
     % the opening tag
     Acc1 = case Elem#xmlElement.nsinfo of
@@ -227,8 +221,8 @@ c14n(Elem = #xmlElement{}, KnownNSIn, ActiveNSIn, Comments, InclNs, Acc) ->
         true ->
             {Acc1, NewActiveNS}
     end,
-    Acc3 = lists:foldl(fun(Ns, AccIn) ->
-        ["\"",xml_safe_string(proplists:get_value(Ns, KnownNS, ""), true),"=\"",Ns,":"," xmlns" | AccIn]
+    Acc3 = lists:foldl(fun({Ns, Uri}, AccIn) ->
+        ["\"",xml_safe_string(Uri, true),"=\"",Ns,":"," xmlns" | AccIn]
     end, Acc2, lists:sort(NewNS)),
     % any other attributes
     Acc4 = lists:foldl(fun(Attr, AccIn) ->
@@ -320,6 +314,16 @@ c14n_inherited_inclusive_ns_test() ->
     [Assertion] = xmerl_xpath:string("/samlp:Response/saml:Assertion", Doc, [{namespace, [{"samlp", 'urn:oasis:names:tc:SAML:2.0:protocol'}, {"saml", 'urn:oasis:names:tc:SAML:2.0:assertion'}]}]),
     "<saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"_a1\"><saml:AttributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"xsd:string\">user@example.com</saml:AttributeValue></saml:Assertion>" = c14n(Assertion, false, []),
     "<saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" ID=\"_a1\"><saml:AttributeValue xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"xsd:string\">user@example.com</saml:AttributeValue></saml:Assertion>" = c14n(Assertion, false, ["xsd"]).
+
+c14n_redeclared_ns_test() ->
+    FirstChild = fun(Xml) ->
+        {Root, _} = xmerl_scan:string(Xml, [{namespace_conformant, true}]),
+        hd([E || E = #xmlElement{} <- Root#xmlElement.content])
+    end,
+    "<a xmlns:xsd=\"urn:a\"><b xmlns:xsd=\"urn:b\"></b></a>" = c14n(FirstChild("<r xmlns:xsd=\"urn:a\"><a><b xmlns:xsd=\"urn:b\"/></a></r>"), false, ["xsd"]),
+    "<a xmlns:xsd=\"urn:a\"><b></b></a>" = c14n(FirstChild("<r xmlns:xsd=\"urn:a\"><a xmlns:xsd=\"urn:a\"><b/></a></r>"), false, ["xsd"]),
+    "<p:a xmlns:p=\"urn:a\"><p:b xmlns:p=\"urn:b\"></p:b></p:a>" = c14n(FirstChild("<r xmlns:p=\"urn:a\"><p:a><p:b xmlns:p=\"urn:b\"/></p:a></r>"), false, []),
+    "<a><b xmlns:p=\"urn:b\" p:x=\"1\"></b></a>" = c14n(FirstChild("<r xmlns:p=\"urn:a\"><a><b xmlns:p=\"urn:b\" p:x=\"1\"/></a></r>"), false, []).
 
 xml_safe_string_test() ->
     "foo" = xml_safe_string('foo'),
